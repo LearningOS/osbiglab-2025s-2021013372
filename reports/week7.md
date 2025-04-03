@@ -61,3 +61,5 @@
 #### 下周工作计划
 
 - 阅读llama.cpp的源码，寻找InfLLM中的实现在llama.cpp中的对应位置。尝试在llama.cpp中进行InfLLM的功能复现
+- 阅读代码并通过log，把IO的热点过程进行分析，并形成文档，记录下来。
+- 分析llama.cpp的代码结构，形成文档
