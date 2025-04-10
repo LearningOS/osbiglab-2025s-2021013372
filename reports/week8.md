@@ -84,3 +84,10 @@ struct llama_model::impl {
 
 
 总体而言，kv-cache的方式比较naive，没有长输入的优化，所以加入InfLLM可以提高性能。
+
+
+## 下一步计划
+
+将InfLLM在llama.cpp中进行实现
+
+通过研究Hotspot和critical path以进一步优化
