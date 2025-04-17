@@ -41,3 +41,5 @@ InfLLM方面，根据助教指导，以及最近学习了CUDA相关技术。
 layer by layer的重叠，加速。
 
 做一个比较大的块，防止访存碎片化。如果没有访存随机性可以不管。
+
+attn score做复刻。留意 flash attn
