@@ -164,9 +164,7 @@
     ```
 
 
-- 根据infllm中的定义，current tokens $X$和evicted token block $B$之间的关系是
-
-    $\text{sim}(X, B) = \sum^{l_X}_{i=1}\sum^{r_k}_{j=1} q_{i+l_P}\cdot k^B_{b_j}$
+- 根据infllm中的定义，current tokens $X$和evicted token block $B$之间的关系是$\text{sim}(X, B) = \sum^{l_X}_{i=1}\sum^{r_k}_{j=1} q_{i+l_P}\cdot k^B_{b_j}$
 
     但是仔细观察发现后可以注意到可以将上式的两个求和分割$\text{sim}(X, B) = \sum^{l_X}_{i=1}\sum^{r_k}_{j=1} q_{i+l_P}\cdot k^B_{b_j}= \sum^{l_X}_{i=1} q_{i+l_P}\cdot \sum^{r_k}_{j=1}k^B_{b_j}$
 
