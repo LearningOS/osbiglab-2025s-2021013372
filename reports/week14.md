@@ -176,3 +176,7 @@
 #### 下周工作计划
 
 - 进行layer prefetch的代码书写
+
+- 不均匀的trunk大小
+
+- kv-cache offload到cpu上
