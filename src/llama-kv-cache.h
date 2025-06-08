@@ -183,6 +183,10 @@ public:
 
     std::vector<ggml_tensor *> k_l; // per layer
     std::vector<ggml_tensor *> v_l;
+    std::vector<ggml_tensor *> score_l;  // representative score per layer
+    std::vector<ggml_tensor *> k_represent_l; // representative key per layer
+    std::vector<int> score_valid_len;
+    std::vector<int> predict_len;
 
 private:
     ggml_type type_k = GGML_TYPE_F16;

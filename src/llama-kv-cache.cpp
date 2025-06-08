@@ -48,7 +48,7 @@ bool llama_kv_cache_unified::init(
         auto it = ctx_map.find(buft);
         if (it == ctx_map.end()) {
             ggml_init_params params = {
-                /*.mem_size   =*/ size_t(2u*n_layer*ggml_tensor_overhead()),
+                /*.mem_size   =*/ size_t(3u*n_layer*ggml_tensor_overhead()+kv_size*n_layer),
                 /*.mem_buffer =*/ NULL,
                 /*.no_alloc   =*/ true,
             };
@@ -69,6 +69,11 @@ bool llama_kv_cache_unified::init(
 
     k_l.reserve(n_layer);
     v_l.reserve(n_layer);
+    score_l.reserve(n_layer);  // reserve for reprensentative score
+    k_represent_l.reserve(n_layer);  // reserve for reprensentative key
+    score_valid_len.reserve(n_layer);  // reserve for reprensentative key
+    predict_len.reserve(n_layer);  // reserve for reprensentative key
+
 
     for (int i = 0; i < n_layer; i++) {
         const uint32_t n_embd_k_gqa = hparams.n_embd_k_gqa(i) + hparams.n_embd_k_s();
@@ -101,6 +106,14 @@ bool llama_kv_cache_unified::init(
         ggml_format_name(v, "cache_v_l%d", i);
         k_l.push_back(k);
         v_l.push_back(v);
+
+        // representative score 
+        ggml_tensor * score = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, kv_size);
+        ggml_format_name(score, "cache_score_l%d", i);
+        score_l.push_back(score);
+        ggml_tensor * k_represent = ggml_new_tensor_1d(ctx, type_k, n_embd_k_gqa*kv_size);
+        ggml_format_name(k_represent, "cache_k_represent_l%d", i);
+        k_represent_l.push_back(k_represent);
     }
 
     // allocate tensors and initialize the buffers to avoid NaNs in the padding
