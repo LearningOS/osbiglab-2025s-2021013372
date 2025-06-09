@@ -365,6 +365,32 @@ llama.cpp/ggml/src/ggml-cuda/sumrows.cu:33: GGML_ASSERT(ggml_is_contiguous(src0)
         }
         ```
 
+        部分的代码展示:
+
+        ```C++
+        auto k_need_score_num = n_tokens - score_block_size + 1;
+        ggml_tensor * k_need_score = ggml_view_3d(ctx0, k,
+            n_embd_head_k, k_need_score_num, n_head_kv,
+            k->nb[1],
+            k->nb[2],
+            0);
+        ggml_tensor * kq_need_score = ggml_mul_mat(ctx0, k_need_score, q);
+        ggml_mul_mat_set_prec(kq_need_score, GGML_PREC_F32);
+        ggml_tensor * score = ggml_view_3d(ctx0, kq_need_score,
+            k_need_score_num, score_block_size, kq_need_score->ne[2],
+            kq_need_score->nb[1]+1,
+            kq_need_score->nb[2],
+            0);
+        score = ggml_view_2d(ctx0, score, k_need_score_num, score->ne[1]*score->ne[2], score->nb[1], 0);
+        score = ggml_transpose(ctx0, score);
+        score = ggml_mean(ctx0, score);
+        score = ggml_transpose(ctx0, score);
+        
+        ggml_tensor* kv_score = ggml_view_1d(ctx0, kv_self->score_l[il], k_need_score_num, 0);
+        ggml_build_forward_expand(gf, ggml_cpy(ctx0, score, kv_score));
+        const_cast<llama_kv_cache_unified *>(kv_self)->score_valid_len = k_need_score_num;
+        ```
+
         
 #### 其他
 
