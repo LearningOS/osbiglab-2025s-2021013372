@@ -303,6 +303,8 @@ llama.cpp中代码比较多，有几万行代码，网上能搜到一些参考�
 
 <!-- InfLLM文章中就提到了在llama.cpp中复现，不过并没有实现。这和llama.cpp和InfLLM的底层数据结构和算法设计不同，导致完全复现实验较为困难。 -->
 
+**代码见本仓库的src/llama.cpp部分**
+
 复现时还是遇到了比较多的问题，比如llama.cpp中算子支持不全，有的算子需要特定条件下才能使用，否则会出现数据不连续、类型不一致等报错信息，比如：
 
 ```
@@ -365,46 +367,164 @@ llama.cpp/ggml/src/ggml-cuda/sumrows.cu:33: GGML_ASSERT(ggml_is_contiguous(src0)
         }
         ```
 
-        部分的代码展示:
+        计算score的时候遇到的一些问题有：
+
+        因为我下载调试的模型使用了混合精度，所以有些张量是float16的，但是ggml的算子支持不是很全面，有些算子只能计算float32，或者有其他限制条件。进行计算的张量的维度也是固定的，所以为了适应算子，需要将需要计算的维度调整到算子中指定的维度，有时还需要进行维度合并才能满足算子的维度要求。
+
+        另外由于float16的范围比较有限，有些运算可能出现溢出，再经过一些算子后，最后结果出现nan。而且由于是静态图，不能在计算是判断每个算子的结果是否有nan，只能将中间过程记录，等待计算图完成计算后再输出进行debug。
+        
+        解决了核心代码如下：
 
         ```C++
         auto k_need_score_num = n_tokens - score_block_size + 1;
-        ggml_tensor * k_need_score = ggml_view_3d(ctx0, k,
+        k_need_score_num = (k_need_score_num/score_block_size)*score_block_size;
+        auto k_cur_to_score = ggml_permute(ctx0, k_cur, 0, 2, 1, 3);
+        ggml_tensor * k_need_score = ggml_view_3d(ctx0, k_cur_to_score,
             n_embd_head_k, k_need_score_num, n_head_kv,
-            k->nb[1],
-            k->nb[2],
+            k_cur_to_score->nb[1],
+            k_cur_to_score->nb[2],
             0);
         ggml_tensor * kq_need_score = ggml_mul_mat(ctx0, k_need_score, q);
         ggml_mul_mat_set_prec(kq_need_score, GGML_PREC_F32);
         ggml_tensor * score = ggml_view_3d(ctx0, kq_need_score,
             k_need_score_num, score_block_size, kq_need_score->ne[2],
-            kq_need_score->nb[1]+1,
+            kq_need_score->nb[1]+ggml_row_size(kq_need_score->type, 1),
             kq_need_score->nb[2],
             0);
         score = ggml_view_2d(ctx0, score, k_need_score_num, score->ne[1]*score->ne[2], score->nb[1], 0);
         score = ggml_transpose(ctx0, score);
         score = ggml_mean(ctx0, score);
         score = ggml_transpose(ctx0, score);
+        const_cast<llama_kv_cache_unified *>(kv_self)->score_valid_len[il] = k_need_score_num>0 ? n_tokens - score_block_size + 1 : 0;
         
-        ggml_tensor* kv_score = ggml_view_1d(ctx0, kv_self->score_l[il], k_need_score_num, 0);
-        ggml_build_forward_expand(gf, ggml_cpy(ctx0, score, kv_score));
-        const_cast<llama_kv_cache_unified *>(kv_self)->score_valid_len = k_need_score_num;
+        auto block_score = ggml_view_2d(ctx0, score, score_block_size, k_need_score_num/score_block_size, ggml_row_size(score->type, score_block_size), 0);
+        auto block_score_f32 = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, block_score->ne[0], block_score->ne[1]);
+        ggml_build_forward_expand(gf, ggml_cpy(ctx0, block_score, block_score_f32));
+        auto score_top_k = ggml_top_k(ctx0, block_score_f32, representative_num);
+
+        auto k_represent = ggml_view_4d(ctx0, k_need_score, k_need_score->ne[0], score_block_size, k_need_score->ne[1]/score_block_size, k_need_score->ne[2], k_need_score->nb[1], k_need_score->nb[1]*score_block_size, k_need_score->nb[2], 0);
+        auto k_represent_perm = ggml_permute(ctx0, k_represent, 0, 2, 3, 1);
+        auto k_represent_top_k = ggml_view_3d(ctx0, k_represent_perm, k_represent_perm->ne[0]*k_represent_perm->ne[1], k_represent_perm->ne[2], k_represent_perm->ne[3], k_represent_perm->nb[2], k_represent_perm->nb[3], 0);
+        k_represent_top_k = ggml_get_rows(ctx0, k_represent_top_k, score_top_k);
+
+        k_represent_top_k = ggml_view_4d(ctx0, k_represent_top_k, k_represent_perm->ne[0], k_represent_top_k->ne[0]/k_represent_perm->ne[0], k_represent_top_k->ne[1], k_represent_top_k->ne[2], k_represent_top_k->nb[1]/representative_num, k_represent_top_k->nb[1], k_represent_top_k->nb[2], 0);
+
+        k_represent_top_k = ggml_permute(ctx0, k_represent_top_k, 1, 2, 0, 3);
+        k_represent_top_k = ggml_mean(ctx0, k_represent_top_k);
+        k_represent_top_k = ggml_view_3d(ctx0, k_represent_top_k, k_represent_top_k->ne[1], k_represent_top_k->ne[2], k_represent_top_k->ne[3], k_represent_top_k->nb[2], k_represent_top_k->nb[3], 0);
+        k_represent_top_k = ggml_permute(ctx0, k_represent_top_k, 0, 2, 1, 3);
+        auto k_represent_l_il = kv_self->k_represent_l[il];
+        k_represent_l_il = ggml_view_3d(ctx0, k_represent_l_il, k_represent_top_k->ne[0], k_represent_top_k->ne[1], k_represent_top_k->ne[2], k_represent_top_k->nb[1], k_represent_top_k->nb[2], 0);
+        ggml_build_forward_expand(gf, ggml_cpy(ctx0, k_represent_top_k, k_represent_l_il));
         ```
 
-        
-#### 其他
+- CPU和GPU间数据传输和同步
 
-利用实验中的经验。对课题组中的模型训练进行了系统层面的一些优化。（由于尚未发表，所以这里只展示一些代码片段）
+    虽然可以直接使用cudaMemcpyAsync和cudaStreamSynchronize进行数据传输和同步，但是这回破坏llama.cpp的前后端分离的设计，所以尽可能使用llama.cpp的接口。
 
-- 考虑硬件的差异。
+    llama.cpp中提供了若干接口是：
+    ```C++
+    void ggml_backend_tensor_set_async(ggml_backend_t backend, ggml_tensor *tensor, const void *data, size_t offset, size_t size);
+    void ggml_backend_tensor_get_async(ggml_backend_t backend, const ggml_tensor *tensor, void *data, size_t offset, size_t size);
+    void ggml_backend_synchronize(ggml_backend_t backend);
+    ```
 
-    - 这台服务器上的GPU计算节点使用光纤连接存储集群，带宽较低，影响训练速度。数据预处理是IO密集型任务，模型训练分离是计算密集型任务。数据预处理受带宽影响很大，由于CPU节点使用IB连接，所以将数据预处理转移到CPU并行处理。数据预处理基本是单核运行，所以同时运行的进程很多，在约50个CPU节点上，使用超过3000个进程处理。如果都在一个文件夹下创建文件，可能超过文件系统的并发能力，所以分散在若干文件夹下，减少文件系统压力。加速几百倍，只需要12h完成了 9 TB的数据预处理（处理后4 TB多）
+    但是在`llm_build_qwen2`这个类中无法直接访问`ggml_backend_t backend`，所以增加了一些成员，`ggml_backend_t *`指针传递到静态图建立过程的代码处。这样才能够读写相应的显存中的内容，完成GPU和CPU之间的数据卸载和装载。ggml库中，虽然每个张量都有类型，但是`ggml_backend_tensor_get_async`的offset和size都是指字节数量，所以编程时需要注意。
 
-    - 进行大规模训练，训练数据超过 4 TB，超过内存大小。训练数据放在硬盘上，做异步数据加载，可以明显提高速度，减少GPU等待时间（利用pytorch框架中的功能，实现相对简单）
+    GPU数据卸载的部分核心代码如下所示：
+    ```C++
+    if (kv_self->k_offload[il]==nullptr) {
+        const_cast<llama_kv_cache_unified *>(kv_self)->k_offload[il] = new char[4096*128*16*ggml_type_size(k_cache_view->type)]; // may be fp16 stored
+        const_cast<llama_kv_cache_unified *>(kv_self)->v_offload[il] = new char[4096*128*16*ggml_type_size(k_cache_view->type)];
+    }
+    // OFFLOAD
+    ggml_backend_tensor_get_async(backend, k_cache_view, kv_self->k_offload[il], 0, k_offload_len*ggml_type_size(k_cache_view->type));
+    ggml_backend_tensor_get_async(backend, v_cache_view, kv_self->v_offload[il], 0, k_offload_len*ggml_type_size(k_cache_view->type));
+    synchronize();
+    ```
+
+    装载时，首先需要读取GPU计算出来的sim(Block, Local_Context)，如下所示：
+    ```C++
+    float* similarity=new float[num_blocks];
+    ggml_backend_tensor_get_async(backend, kv_self->score_l[il], similarity, 0, num_blocks*sizeof(float));
+    synchronize();
+    ```
+
+    然后根据这个相似度，比对最重要的block是哪些，然后判断哪些block目前没有在gpu上（只有不在GPU才会触发CPU和GPU间的数据传输，以减少数据传输）。核心代码片段如下所示
+
+    ```C++
+    auto represent_blocks_num = num_blocks-(initial_block_len/score_block_size)-(local_block_len/score_block_size);
+    auto& last_gpu_idx = const_cast<llama_kv_cache_unified *>(kv_self)->gpu_load_idx[il];
+    std::vector<int> curr_gpu_idx;
+    curr_gpu_idx.resize(max_blocks_num, -1);
+    if (kv_self->predict_len[il]==1) {
+        last_gpu_idx.resize(max_blocks_num, -1);
+        std::fill(last_gpu_idx.begin(), last_gpu_idx.end(), -1);
+    }
+    std::vector<std::pair<float, int>> sort_idx;
+    for (int i=(initial_block_len/score_block_size);i<num_blocks-(local_block_len/score_block_size);++i) {
+        sort_idx.emplace_back(similarity[i], i);
+    }
+    std::sort(sort_idx.begin(), sort_idx.end(), [](const std::pair<double, int>& a, const std::pair<double, int>& b) {
+        return a.first > b.first;
+    });
+    auto block_bytes = n_embd_head_k * score_block_size * n_head_kv * ggml_type_size(k_cache_view->type);
+    for (int j=0; j<max_blocks_num; ++j) {
+        curr_gpu_idx[j] = sort_idx[j].second;
+    }
+    for (int j=0; j<max_blocks_num; ++j) {
+        auto it = std::find(curr_gpu_idx.begin(), curr_gpu_idx.end(), last_gpu_idx[j]);
+        if (it != curr_gpu_idx.end()) {
+            auto index = std::distance(curr_gpu_idx.begin(), it);
+            if (index!=j) {
+                std::swap(curr_gpu_idx[index], curr_gpu_idx[j]);
+            }
+        }
+    }
+    for (int j=0; j<max_blocks_num; ++j) {
+        // LOAD when necessary only
+        if (curr_gpu_idx[j]!=last_gpu_idx[j]) {
+            ggml_backend_tensor_set_async(backend, k_cache_view, kv_self->k_offload[il]+(curr_gpu_idx[j]*block_bytes), block_bytes*j+(n_embd_head_k * initial_block_len * n_head_kv * ggml_type_size(k_cache_view->type)), block_bytes);
+            ggml_backend_tensor_set_async(backend, v_cache_view, kv_self->v_offload[il]+(curr_gpu_idx[j]*block_bytes), block_bytes*j+(n_embd_head_k * initial_block_len * n_head_kv * ggml_type_size(k_cache_view->type)), block_bytes);
+        }
+    }
+    synchronize();
+    const_cast<llama_kv_cache_unified *>(kv_self)->gpu_load_idx[il] = curr_gpu_idx;
+    ```
+
+    如果想要确实优化了LOAD过程（只有数据不在GPU上时才会进行数据装载），可以将`src/llama-graph.cpp`的1494行解除注释，这样会在每次发生装载的时候输出装载的block的index。结合similarity中的值，可以观察到只有上下文变化的时候才会有数据传输。
+
+- sim(Block, Local_Contex)的计算
+
+    由于llama.cpp的特点，导致infllm的部分实现可能在llama.cpp中比较不方便，以及和llama.cpp的管理kv的方式不同。所以这里采用了一种折中的方式解决sim(Block, Local_Contex)的计算。对于预测第$t$个token的sim记为$sim[t]$，采用移动平均方式更新sim：$sim[t]=(1-\alpha)\cdot sim[t-1]+\alpha\cdot new\_sim$。这样可以保证每个token的sim确实只是其附近若干token的和block的相关性，而且所涉及的block也不会发生频繁变化。核心代码如下所示
+    ```C++
+    auto num_blocks = kv_self->score_valid_len[il]/score_block_size;
+    auto k_represent_l_il = kv_self->k_represent_l[il];
+    k_represent_l_il = ggml_view_3d(ctx0, k_represent_l_il, n_embd_head_k, num_blocks, n_head_kv, ggml_row_size(k_represent_l_il->type, n_embd_head_k), ggml_row_size(k_represent_l_il->type, n_embd_head_k)*num_blocks, 0);
+    k_represent_l_il = ggml_clamp(ctx0, k_represent_l_il, -10, 10); // avoid overflow
+    
+    auto similarity = ggml_mul_mat(ctx0, k_represent_l_il, q);
+    ggml_mul_mat_set_prec(similarity, GGML_PREC_F32);
+    similarity = ggml_permute(ctx0, similarity, 1, 2, 0, 3);
+    similarity = ggml_mean(ctx0, similarity);
+    similarity = ggml_transpose(ctx0, similarity); // num_blocks
+    ggml_tensor* similarity_il = ggml_view_1d(ctx0, kv_self->score_l[il], num_blocks, 0);
+    if (kv_self->predict_len[il]) {
+        similarity = ggml_mul(ctx0, similarity, ggml_arange(ctx0, 0.05, 0.5, 1.)); // *.05
+        similarity = ggml_add(ctx0, similarity, ggml_mul(ctx0, similarity_il, ggml_arange(ctx0, 0.95, 1.5, 1.))); // + old*.95
+        ggml_build_forward_expand(gf, ggml_cpy(ctx0, similarity, similarity_il));
+    } else {
+        ggml_build_forward_expand(gf, ggml_cpy(ctx0, similarity, similarity_il));
+    }
+    const_cast<llama_kv_cache_unified *>(kv_self)->predict_len[il]++;
+    ```
+
 
 ### 总结
 
-通过本次实验，了解了LLM推理时可能面临的问题，以及一些优化要点和量化分析手段，也了解了llama.cpp的框架和设计逻辑。同时对于环境配置和工具链编译等方面也有了一些经验。对于异构加速器的使用
+通过本次实验，了解了LLM推理时可能面临的问题，以及一些优化要点和量化分析手段，也了解了llama.cpp的框架和设计逻辑。同时对于环境配置和工具链编译等方面也有了一些经验。对于异构加速器的使用。
+
+由于infllm和llama.cpp的设计本身差异很大（llama.cpp的kv-cache设计可能没有考虑对offload的支持），导致难以实现完全相同的效果。这里采取了一种折中的方式，将infllm的主要kv offload的设计思路在llama.cpp上进行了实现，具体细节上有一些调整。不可否认，这些调整可能影响了性能。不过想要在llama.cpp中实现更有效的kv-cache，首先可能ggml支持的算子需要更多，另外在设计上增加很多类的接口，便于进行数据卸载和装载。可能这两方面的改进是更有效的llama.cpp上的kv offload的前提。不过增加算子支持的工作量较大，而增加类的接口可能需要彻底修改很多类的设计，而这超出了本次大实验的范围，不过仍然是值得尝试的问题。
 
 感谢陈渝老师、王拓为助教和郝子胥助教的指导。
 
