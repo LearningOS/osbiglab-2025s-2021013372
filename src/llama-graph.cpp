@@ -1361,6 +1361,10 @@ ggml_tensor * llm_graph_context::build_attn(
         //cb(v_cache_view, "v_cache_view", il);
 
         ggml_build_forward_expand(gf, ggml_cpy(ctx0, v_cur, v_cache_view));
+
+        if (il==3) {
+            // printf("==========kv_head: %d\n", kv_head);
+        }
     }
 
     const bool is_swa = hparams.is_swa(il);
@@ -1399,11 +1403,37 @@ ggml_tensor * llm_graph_context::build_attn(
 
     constexpr auto score_block_size = 10;
     constexpr auto initial_block_len = score_block_size;
+    constexpr auto local_block_len = score_block_size;
+    constexpr auto max_blocks_num = 5;
     constexpr auto representative_num = 6;
     if (n_tokens == 1) {
         if (kv_self->score_valid_len[il] > 0 && kv_self->predict_len[il] > 0) {
-            float similarity[256];
             auto num_blocks = kv_self->score_valid_len[il]/score_block_size;
+            const auto kv_head = kv_self->head-kv_self->predict_len[il]-(kv_self->score_valid_len[il]+score_block_size-1);
+            auto k_offload_len = n_embd_head_k * kv_self->score_valid_len[il] * n_head_kv;
+            ggml_tensor * k_cache_view = ggml_view_1d(ctx0, kv_self->k_l[il], k_offload_len, ggml_row_size(kv_self->k_l[il]->type, n_embd_k_gqa)*kv_head);
+            ggml_tensor * v_cache_view = ggml_view_1d(ctx0, kv_self->v_l[il], k_offload_len, ggml_row_size(kv_self->v_l[il]->type, n_embd_k_gqa)*kv_head);
+            if (kv_self->predict_len[il]==1) {
+                if (kv_self->k_offload[il]==nullptr) {
+                    const_cast<llama_kv_cache_unified *>(kv_self)->k_offload[il] = new char[4096*128*16*ggml_type_size(k_cache_view->type)]; // but may be fp16 stored
+                    const_cast<llama_kv_cache_unified *>(kv_self)->v_offload[il] = new char[4096*128*16*ggml_type_size(k_cache_view->type)];
+                }
+                if (il==3) {
+                    printf("===========k_cache_view %p\n", k_cache_view);
+                    printf("===========offload kv_head %d\n", kv_head);
+                }
+                
+                ggml_backend_tensor_get_async(backend, k_cache_view, kv_self->k_offload[il], 0, k_offload_len*ggml_type_size(k_cache_view->type));
+                ggml_backend_tensor_get_async(backend, v_cache_view, kv_self->v_offload[il], 0, k_offload_len*ggml_type_size(k_cache_view->type));
+                synchronize();
+                // if (il==3) {
+                //     for(int i=0; i!=k_rep_host_len;++i) {
+                //         printf("=======k_rep_host[%d] %f\n", i, k_rep_host[i]);
+                //     }
+                // }
+            }
+            // float similarity[256]={0};
+            float* similarity=new float[num_blocks];
             // ggml_tensor* similarity_il = ggml_view_1d(ctx0, kv_self->score_l[il], num_blocks, 0);
             // if (il==3) {
             //     for(int i=0; i!=num_blocks;++i) {
@@ -1411,28 +1441,57 @@ ggml_tensor * llm_graph_context::build_attn(
             //     }
             //     // printf("=======type %d\n", kv_self->score_l[il]->type);
             // }
-            ggml_backend_tensor_get(kv_self->score_l[il], similarity, 0, num_blocks*sizeof(float));
-            // for(auto i=0;i!=1000;++i)
-            // ggml_backend_synchronize(kv_self->score_l[il]->buffer);
             if (il==3) {
                 for(int i=0; i!=num_blocks;++i) {
-                    printf("=======sim[%d] %f\n", i, similarity[i]);
+                    // printf("=======sim[%d] %f\n", i, similarity[i]);
                 }
-                printf("=======type %d\n", kv_self->score_l[il]->type);
-                ;
             }
+            // ggml_backend_tensor_get(kv_self->score_l[il], similarity, 0, num_blocks*sizeof(float));
+            // synchronize();
+            ggml_backend_tensor_get_async(backend, kv_self->score_l[il], similarity, 0, num_blocks*sizeof(float));
+            synchronize();
+            // if ((num_blocks-(initial_block_len/score_block_size)-(local_block_len/score_block_size))>max_blocks_num) {
+            if (true) {
+                std::vector<std::pair<float, int>> sort_idx;
+                for (int i=(initial_block_len/score_block_size);i<num_blocks-(local_block_len/score_block_size);++i) {
+                    sort_idx.emplace_back(similarity[i], i);
+                }
+                std::sort(sort_idx.begin(), sort_idx.end(), [](const std::pair<double, int>& a, const std::pair<double, int>& b) {
+                    return a.first > b.first;
+                });
+                auto block_bytes = n_embd_head_k * score_block_size * n_head_kv * ggml_type_size(k_cache_view->type);
+                // auto cpy_to_device_buf = new char[block_bytes*max_blocks_num*2];
+                // for (int j=0; j<max_blocks_num; ++j) {
+                for (int j=0; j<std::min(max_blocks_num, num_blocks-(initial_block_len/score_block_size)-(local_block_len/score_block_size)); ++j) {
+                    // memcpy(cpy_to_device_buf+(j*block_bytes), kv_self->k_offload[il]+(sort_idx[j].second*block_bytes), block_bytes);
+                    if (il==3){
+                        // printf("===========j sort_idx[j].second %d %d\n", j, sort_idx[j].second);
+                    }
+                    ggml_backend_tensor_set_async(backend, k_cache_view, kv_self->k_offload[il]+(sort_idx[j].second*block_bytes), block_bytes*j+(n_embd_head_k * initial_block_len * n_head_kv * ggml_type_size(k_cache_view->type)), block_bytes);
+                    ggml_backend_tensor_set_async(backend, v_cache_view, kv_self->v_offload[il]+(sort_idx[j].second*block_bytes), block_bytes*j+(n_embd_head_k * initial_block_len * n_head_kv * ggml_type_size(k_cache_view->type)), block_bytes);
+                }
+                synchronize();
+            }
+            if (il==3) {
+                for(int i=0; i!=num_blocks;++i) {
+                    // printf("=======sim[%d] %f\n", i, similarity[i]);
+                }
+                // printf("=======type %d\n", kv_self->score_l[il]->type);
+            }
+            delete[] similarity;
         }
     }
 
     ggml_tensor * cur = build_attn_mha(gf, q, k, v, kq_b, kq_mask, v_trans, kq_scale);
     cb(cur, "kqv_out", il);
 
-    // if (il==3) {
+    if (il==3) {
     //     printf("==========q: %d %d %d %d\n", q->ne[0], q->ne[1], q->ne[2], q->ne[3]);
     //     printf("==========k: %d %d %d %d\n", k->ne[0], k->ne[1], k->ne[2], k->ne[3]);
     //     printf("==========k_cur: %d %d %d %d\n", k_cur->ne[0], k_cur->ne[1], k_cur->ne[2], k_cur->ne[3]);
     //     printf("==========v: %d %d %d %d\n", v->ne[0], v->ne[1], v->ne[2], v->ne[3]);
-    // }
+        // printf("==========kq_mask: %d %d %d %d\n", kq_mask->ne[0], kq_mask->ne[1], kq_mask->ne[2], kq_mask->ne[3]);
+    }
     if (n_tokens > 1) {
         // store k_represent
         if (n_tokens > score_block_size*2) {
@@ -1484,15 +1543,16 @@ ggml_tensor * llm_graph_context::build_attn(
             
             // ggml_tensor* kv_score = ggml_view_1d(ctx0, kv_self->score_l[il], k_need_score_num, 0);
             // ggml_build_forward_expand(gf, ggml_cpy(ctx0, score, kv_score));
-            const_cast<llama_kv_cache_unified *>(kv_self)->score_valid_len[il] = k_need_score_num;
+            const_cast<llama_kv_cache_unified *>(kv_self)->score_valid_len[il] = k_need_score_num>0 ? n_tokens - score_block_size + 1 : 0;
             
             auto block_score = ggml_view_2d(ctx0, score, score_block_size, k_need_score_num/score_block_size, ggml_row_size(score->type, score_block_size), 0);
             // auto mask = ggml_view_3d(ctx0, block_score, block_score->ne[0], representative_num, block_score->ne[1], 0, block_score->nb[1], 0);
             // ggml_build_forward_expand(gf, mask);
             auto block_score_f32 = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, block_score->ne[0], block_score->ne[1]);
-            block_score_f32 = ggml_cpy(ctx0, block_score, block_score_f32);
+            // block_score_f32 = ggml_cpy(ctx0, block_score, block_score_f32);
+            ggml_build_forward_expand(gf, ggml_cpy(ctx0, block_score, block_score_f32));
             auto score_top_k = ggml_top_k(ctx0, block_score_f32, representative_num);
-            ggml_build_forward_expand(gf, score_top_k);
+            // ggml_build_forward_expand(gf, score_top_k);
             // mask = ggml_sub(ctx0, mask, ggml_permute(ctx0, score_top_k, 1, 2, 0, 3));
             // mask = ggml_abs_inplace(ctx0, mask);
             // mask = ggml_step_inplace(ctx0, mask); // diff:1 or same:0
@@ -1544,25 +1604,53 @@ ggml_tensor * llm_graph_context::build_attn(
             auto num_blocks = kv_self->score_valid_len[il]/score_block_size;
             auto k_represent_l_il = kv_self->k_represent_l[il];
             k_represent_l_il = ggml_view_3d(ctx0, k_represent_l_il, n_embd_head_k, num_blocks, n_head_kv, ggml_row_size(k_represent_l_il->type, n_embd_head_k), ggml_row_size(k_represent_l_il->type, n_embd_head_k)*num_blocks, 0);
+            k_represent_l_il = ggml_clamp(ctx0, k_represent_l_il, -10, 10); // avoid overflow
+            
             auto similarity = ggml_mul_mat(ctx0, k_represent_l_il, q);
+            ggml_mul_mat_set_prec(similarity, GGML_PREC_F32);
+            // if (il==3) {
+            //     printf("==========before similarity: %d %d %d %d\n", similarity->ne[0], similarity->ne[1], similarity->ne[2], similarity->ne[3]);
+            // }
+            
+            // auto c = ggml_view_1d(ctx0, k_represent_l_il, num_blocks, 4); // not nan
+            // auto c = ggml_view_1d(ctx0, similarity, num_blocks, 0); // has nan, but eliminate nan
+
             similarity = ggml_permute(ctx0, similarity, 1, 2, 0, 3);
             similarity = ggml_mean(ctx0, similarity);
+            // auto c = ggml_view_1d(ctx0, similarity, num_blocks, 0);
+
+            // ggml_build_forward_expand(gf, ggml_cpy(ctx0, ggml_transpose(ctx0, ggml_arange(ctx0, 0.+kv_self->predict_len[il], similarity->ne[1]+kv_self->predict_len[il], 1.)), similarity));
+            // auto a = ggml_arange(ctx0, 0.+kv_self->predict_len[il], similarity->ne[1]+kv_self->predict_len[il], 1.);
+            
+            // ggml_build_forward_expand(gf, ggml_cpy(ctx0, a, ggml_transpose(ctx0, similarity)));
+            // auto b = ggml_transpose(ctx0, a);
+            // ggml_build_forward_expand(gf, b);
+            // ggml_build_forward_expand(gf, ggml_cpy(ctx0, b, similarity));
+
             similarity = ggml_transpose(ctx0, similarity); // num_blocks
+
+            // ggml_build_forward_expand(gf, ggml_cpy(ctx0, a, similarity)); // correct
+            // ggml_build_forward_expand(gf, ggml_cpy(ctx0, c, similarity)); // correct
+            
             ggml_tensor* similarity_il = ggml_view_1d(ctx0, kv_self->score_l[il], num_blocks, 0);
             if (kv_self->predict_len[il]) {
                 if (il==3) {
-                    printf("==========similarity: %d %d %d %d\n", similarity->ne[0], similarity->ne[1], similarity->ne[2], similarity->ne[3]);
+                    // printf("==========similarity: %d %d %d %d\n", similarity->ne[0], similarity->ne[1], similarity->ne[2], similarity->ne[3]);
                 }
                 similarity = ggml_mul(ctx0, similarity, ggml_arange(ctx0, 0.05, 0.5, 1.)); // *.05
                 similarity = ggml_add(ctx0, similarity, ggml_mul(ctx0, similarity_il, ggml_arange(ctx0, 0.95, 1.5, 1.))); // + old*.95
-                // ggml_build_forward_expand(gf, ggml_cpy(ctx0, similarity, similarity_il));
-
-            } else {
-                if (il==3) {
-                    printf("==========q: %d %d %d %d\n", q->ne[0], q->ne[1], q->ne[2], q->ne[3]);
-                    printf("==========q_cur: %d %d %d %d\n", q_cur->ne[0], q_cur->ne[1], q_cur->ne[2], q_cur->ne[3]);
-                }
                 ggml_build_forward_expand(gf, ggml_cpy(ctx0, similarity, similarity_il));
+                // ggml_build_forward_expand(gf, ggml_cpy(ctx0, s1, similarity_il));
+                // ggml_build_forward_expand(gf, ggml_cpy(ctx0, ggml_arange(ctx0, 0., similarity_il->ne[0], 1.), similarity_il));
+            } else {
+                // if (il==3) {
+                //     printf("==========k: %d %d %d %d\n", k->ne[0], k->ne[1], k->ne[2], k->ne[3]);
+                //     printf("==========k_represent_l_il: %d %d %d %d\n", k_represent_l_il->ne[0], k_represent_l_il->ne[1], k_represent_l_il->ne[2], k_represent_l_il->ne[3]);
+                //     printf("==========q: %d %d %d %d\n", q->ne[0], q->ne[1], q->ne[2], q->ne[3]);
+                //     printf("==========q_cur: %d %d %d %d\n", q_cur->ne[0], q_cur->ne[1], q_cur->ne[2], q_cur->ne[3]);
+                // }
+                ggml_build_forward_expand(gf, ggml_cpy(ctx0, similarity, similarity_il));
+                // ggml_build_forward_expand(gf, ggml_cpy(ctx0, ggml_arange(ctx0, 0., similarity_il->ne[0], 1.), similarity_il));
             }
             const_cast<llama_kv_cache_unified *>(kv_self)->predict_len[il]++;
             if (il==3) {

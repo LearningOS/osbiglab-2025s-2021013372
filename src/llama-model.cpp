@@ -6060,9 +6060,10 @@ struct llm_build_qwen : public llm_graph_context {
 
 struct llm_build_qwen2 : public llm_graph_context {
     llm_build_qwen2(const llama_model & model, const llm_graph_params & params, ggml_cgraph * gf) : llm_graph_context(params) {
-        printf("%p\n", this->lctx);
+        // printf("%p\n", this->backend);
         this->lctx = model.llama_context_ptr;
-        printf("%p\n", this->lctx);
+        this->backend = model.backend;
+        // printf("%p\n", this->backend);
         // throw std::runtime_error("");
         const int64_t n_embd_head = hparams.n_embd_head_v;
 

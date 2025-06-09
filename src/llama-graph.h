@@ -574,7 +574,12 @@ struct llm_graph_context {
             ggml_tensor * cls_out_b) const;
 
     llama_context * lctx = nullptr;
-    // void synchronize() {
-    //     lctx->synchronize();
-    // }
+    ggml_backend_t backend = nullptr;
+    void synchronize() const {
+        // lctx->synchronize();
+        if (backend) {
+            // printf("%p\n", this->backend);
+            ggml_backend_synchronize(backend);
+        }
+    }
 };

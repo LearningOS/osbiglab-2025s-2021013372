@@ -396,6 +396,7 @@ struct llama_model {
                     llm_graph_type   type) const;
 
     llama_context * llama_context_ptr=nullptr;
+    ggml_backend_t backend;
 
 private:
     struct impl;

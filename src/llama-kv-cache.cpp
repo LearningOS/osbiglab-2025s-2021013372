@@ -71,8 +71,14 @@ bool llama_kv_cache_unified::init(
     v_l.reserve(n_layer);
     score_l.reserve(n_layer);  // reserve for reprensentative score
     k_represent_l.reserve(n_layer);  // reserve for reprensentative key
-    score_valid_len.reserve(n_layer);  // reserve for reprensentative key
-    predict_len.reserve(n_layer);  // reserve for reprensentative key
+    score_valid_len.reserve(n_layer);
+    score_valid_len.resize(n_layer, 0);
+    predict_len.reserve(n_layer);
+    predict_len.resize(n_layer, 0);
+    k_offload.reserve(n_layer);
+    k_offload.resize(n_layer, nullptr);
+    v_offload.reserve(n_layer);
+    v_offload.resize(n_layer, nullptr);
 
 
     for (int i = 0; i < n_layer; i++) {
