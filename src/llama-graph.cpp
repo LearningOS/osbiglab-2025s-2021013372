@@ -1423,9 +1423,14 @@ ggml_tensor * llm_graph_context::build_attn(
                     printf("===========offload kv_head %d\n", kv_head);
                 }
                 
+                // OFFLOAD
                 ggml_backend_tensor_get_async(backend, k_cache_view, kv_self->k_offload[il], 0, k_offload_len*ggml_type_size(k_cache_view->type));
                 ggml_backend_tensor_get_async(backend, v_cache_view, kv_self->v_offload[il], 0, k_offload_len*ggml_type_size(k_cache_view->type));
                 synchronize();
+                if ((num_blocks-(initial_block_len/score_block_size)-(local_block_len/score_block_size))>max_blocks_num) {
+                    auto a = ggml_view_1d(ctx0, kv_self->v_l[il], ((num_blocks-max_blocks_num)*score_block_size-initial_block_len-local_block_len), ggml_row_size(kv_self->v_l[il]->type, n_embd_k_gqa)*(kv_head+initial_block_len+score_block_size*max_blocks_num));
+                    ggml_build_forward_expand(gf, ggml_sub_inplace(ctx0, a, a)); // clear data. Future: delete data
+                }
                 // if (il==3) {
                 //     for(int i=0; i!=k_rep_host_len;++i) {
                 //         printf("=======k_rep_host[%d] %f\n", i, k_rep_host[i]);
@@ -1450,8 +1455,16 @@ ggml_tensor * llm_graph_context::build_attn(
             // synchronize();
             ggml_backend_tensor_get_async(backend, kv_self->score_l[il], similarity, 0, num_blocks*sizeof(float));
             synchronize();
-            // if ((num_blocks-(initial_block_len/score_block_size)-(local_block_len/score_block_size))>max_blocks_num) {
-            if (true) {
+            if ((num_blocks-(initial_block_len/score_block_size)-(local_block_len/score_block_size))>max_blocks_num) {
+            // if (true) {
+                auto represent_blocks_num = num_blocks-(initial_block_len/score_block_size)-(local_block_len/score_block_size);
+                auto& last_gpu_idx = const_cast<llama_kv_cache_unified *>(kv_self)->gpu_load_idx[il];
+                std::vector<int> curr_gpu_idx;
+                curr_gpu_idx.resize(max_blocks_num, -1);
+                if (kv_self->predict_len[il]==1) {
+                    last_gpu_idx.resize(max_blocks_num, -1);
+                    std::fill(last_gpu_idx.begin(), last_gpu_idx.end(), -1);
+                }
                 std::vector<std::pair<float, int>> sort_idx;
                 for (int i=(initial_block_len/score_block_size);i<num_blocks-(local_block_len/score_block_size);++i) {
                     sort_idx.emplace_back(similarity[i], i);
@@ -1461,16 +1474,34 @@ ggml_tensor * llm_graph_context::build_attn(
                 });
                 auto block_bytes = n_embd_head_k * score_block_size * n_head_kv * ggml_type_size(k_cache_view->type);
                 // auto cpy_to_device_buf = new char[block_bytes*max_blocks_num*2];
-                // for (int j=0; j<max_blocks_num; ++j) {
-                for (int j=0; j<std::min(max_blocks_num, num_blocks-(initial_block_len/score_block_size)-(local_block_len/score_block_size)); ++j) {
+                for (int j=0; j<max_blocks_num; ++j) {
+                    curr_gpu_idx[j] = sort_idx[j].second;
+                }
+                for (int j=0; j<max_blocks_num; ++j) {
+                    auto it = std::find(curr_gpu_idx.begin(), curr_gpu_idx.end(), last_gpu_idx[j]);
+                    if (it != curr_gpu_idx.end()) {
+                        auto index = std::distance(curr_gpu_idx.begin(), it);
+                        if (index!=j) {
+                            std::swap(curr_gpu_idx[index], curr_gpu_idx[j]);
+                        }
+                    }
+                }
+                for (int j=0; j<max_blocks_num; ++j) {
                     // memcpy(cpy_to_device_buf+(j*block_bytes), kv_self->k_offload[il]+(sort_idx[j].second*block_bytes), block_bytes);
                     if (il==3){
-                        // printf("===========j sort_idx[j].second %d %d\n", j, sort_idx[j].second);
+                        // printf("===========j sort_idx[j].second curr_gpu_idx[j] %d %d %d\n", j, sort_idx[j].second,curr_gpu_idx[j]);
+                        if (curr_gpu_idx[j]!=last_gpu_idx[j]) {
+                            printf("===========LOAD curr_gpu_idx[j] %d\n", curr_gpu_idx[j]);
+                        }
                     }
-                    ggml_backend_tensor_set_async(backend, k_cache_view, kv_self->k_offload[il]+(sort_idx[j].second*block_bytes), block_bytes*j+(n_embd_head_k * initial_block_len * n_head_kv * ggml_type_size(k_cache_view->type)), block_bytes);
-                    ggml_backend_tensor_set_async(backend, v_cache_view, kv_self->v_offload[il]+(sort_idx[j].second*block_bytes), block_bytes*j+(n_embd_head_k * initial_block_len * n_head_kv * ggml_type_size(k_cache_view->type)), block_bytes);
+                    // LOAD when necessary only
+                    if (curr_gpu_idx[j]!=last_gpu_idx[j]) {
+                        ggml_backend_tensor_set_async(backend, k_cache_view, kv_self->k_offload[il]+(curr_gpu_idx[j]*block_bytes), block_bytes*j+(n_embd_head_k * initial_block_len * n_head_kv * ggml_type_size(k_cache_view->type)), block_bytes);
+                        ggml_backend_tensor_set_async(backend, v_cache_view, kv_self->v_offload[il]+(curr_gpu_idx[j]*block_bytes), block_bytes*j+(n_embd_head_k * initial_block_len * n_head_kv * ggml_type_size(k_cache_view->type)), block_bytes);
+                    }
                 }
                 synchronize();
+                const_cast<llama_kv_cache_unified *>(kv_self)->gpu_load_idx[il] = curr_gpu_idx;
             }
             if (il==3) {
                 for(int i=0; i!=num_blocks;++i) {

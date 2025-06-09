@@ -189,6 +189,7 @@ public:
     std::vector<int> predict_len;
     std::vector<void*> k_offload;
     std::vector<void*> v_offload;
+    std::vector<std::vector<int>> gpu_load_idx;
 
 private:
     ggml_type type_k = GGML_TYPE_F16;

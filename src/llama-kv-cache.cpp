@@ -79,7 +79,8 @@ bool llama_kv_cache_unified::init(
     k_offload.resize(n_layer, nullptr);
     v_offload.reserve(n_layer);
     v_offload.resize(n_layer, nullptr);
-
+    gpu_load_idx.reserve(n_layer);
+    gpu_load_idx.resize(n_layer, std::vector<int>());
 
     for (int i = 0; i < n_layer; i++) {
         const uint32_t n_embd_k_gqa = hparams.n_embd_k_gqa(i) + hparams.n_embd_k_s();
