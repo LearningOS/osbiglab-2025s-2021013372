@@ -423,6 +423,8 @@ void llama_context::synchronize() {
 }
 
 const llama_model & llama_context::get_model() const {
+    // throw std::runtime_error(format("DEBUGGGGG"));
+    const_cast<llama_model &>(model).llama_context_ptr = const_cast<llama_context *>(this);
     return model;
 }
 

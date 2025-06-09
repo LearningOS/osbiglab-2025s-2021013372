@@ -6060,6 +6060,10 @@ struct llm_build_qwen : public llm_graph_context {
 
 struct llm_build_qwen2 : public llm_graph_context {
     llm_build_qwen2(const llama_model & model, const llm_graph_params & params, ggml_cgraph * gf) : llm_graph_context(params) {
+        printf("%p\n", this->lctx);
+        this->lctx = model.llama_context_ptr;
+        printf("%p\n", this->lctx);
+        // throw std::runtime_error("");
         const int64_t n_embd_head = hparams.n_embd_head_v;
 
         GGML_ASSERT(n_embd_head == hparams.n_embd_head_k);
@@ -6088,6 +6092,10 @@ struct llm_build_qwen2 : public llm_graph_context {
             {
                 // compute Q and K and RoPE them
                 ggml_tensor * Qcur = build_lora_mm(model.layers[il].wq, cur);
+                if (il==3) {
+                    // printf("=========%d %d %d %d %d\n", Qcur->ne[0], Qcur->ne[1], Qcur->ne[2], Qcur->ne[3], ubatch.n_tokens);
+                    // printf("=========%d %d %d %d %d\n", (ubatch.n_seq_id ? ubatch.n_seq_id[0] : 12345678), ubatch.n_seqs, ubatch.n_seq_tokens, Qcur->ne[1], ubatch.n_tokens);
+                }
                 Qcur = ggml_add(ctx0, Qcur, model.layers[il].bq);
                 cb(Qcur, "Qcur", il);
 

@@ -3,6 +3,7 @@
 #include "llama-arch.h"
 #include "llama-hparams.h"
 #include "llama-adapter.h"
+// #include "llama-context.h"
 
 #include <cstdint>
 #include <vector>
@@ -571,4 +572,9 @@ struct llm_graph_context {
             ggml_tensor * cls_b,
             ggml_tensor * cls_out,
             ggml_tensor * cls_out_b) const;
+
+    llama_context * lctx = nullptr;
+    // void synchronize() {
+    //     lctx->synchronize();
+    // }
 };

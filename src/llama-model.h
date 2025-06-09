@@ -395,6 +395,8 @@ struct llama_model {
                        ggml_cgraph * gf,
                     llm_graph_type   type) const;
 
+    llama_context * llama_context_ptr=nullptr;
+
 private:
     struct impl;
     std::unique_ptr<impl> pimpl;
