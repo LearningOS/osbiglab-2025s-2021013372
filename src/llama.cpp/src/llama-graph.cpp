@@ -1491,7 +1491,7 @@ ggml_tensor * llm_graph_context::build_attn(
                     if (il==3){
                         // printf("===========j sort_idx[j].second curr_gpu_idx[j] %d %d %d\n", j, sort_idx[j].second,curr_gpu_idx[j]);
                         if (curr_gpu_idx[j]!=last_gpu_idx[j]) {
-                            printf("===========LOAD curr_gpu_idx[j] %d\n", curr_gpu_idx[j]);
+                            // printf("===========LOAD curr_gpu_idx[j] %d\n", curr_gpu_idx[j]);
                         }
                     }
                     // LOAD when necessary only
