@@ -1419,8 +1419,8 @@ ggml_tensor * llm_graph_context::build_attn(
                     const_cast<llama_kv_cache_unified *>(kv_self)->v_offload[il] = new char[4096*128*16*ggml_type_size(k_cache_view->type)];
                 }
                 if (il==3) {
-                    printf("===========k_cache_view %p\n", k_cache_view);
-                    printf("===========offload kv_head %d\n", kv_head);
+                    // printf("===========k_cache_view %p\n", k_cache_view);
+                    // printf("===========offload kv_head %d\n", kv_head);
                 }
                 
                 // OFFLOAD
@@ -1529,13 +1529,13 @@ ggml_tensor * llm_graph_context::build_attn(
             if (il==3) {
                 // printf("+++++++++%d %d %d\n", n_embd_head_v, n_kv, n_head_kv);
                 // printf("==========v: %d %d %d\n", v->ne[0], v->ne[1], v->ne[2]);
-                printf("yyyyyyy%d %d %d %d\n", kv_self->n, n_kv, n_tokens, ubatch.n_tokens); // kv_self->n==n_kv, n_tokens==ubatch.n_tokens
+                // printf("yyyyyyy%d %d %d %d\n", kv_self->n, n_kv, n_tokens, ubatch.n_tokens); // kv_self->n==n_kv, n_tokens==ubatch.n_tokens
             }
             auto k_need_score_num = n_tokens - score_block_size + 1;
             k_need_score_num = (k_need_score_num/score_block_size)*score_block_size;
             auto k_cur_to_score = ggml_permute(ctx0, k_cur, 0, 2, 1, 3);
             if (il==3) {
-                printf("==========k_cur_to_score: %d %d %d\n", k_cur_to_score->ne[0], k_cur_to_score->ne[1], k_cur_to_score->ne[2]);
+                // printf("==========k_cur_to_score: %d %d %d\n", k_cur_to_score->ne[0], k_cur_to_score->ne[1], k_cur_to_score->ne[2]);
             }
             ggml_tensor * k_need_score = ggml_view_3d(ctx0, k_cur_to_score,
                 n_embd_head_k, k_need_score_num, n_head_kv,
@@ -1550,19 +1550,19 @@ ggml_tensor * llm_graph_context::build_attn(
                 kq_need_score->nb[2],
                 0);
             if (il==3) {
-                printf("==========k_need_score: %d %d %d\n", k_need_score->ne[0], k_need_score->ne[1], k_need_score->ne[2]);
+                // printf("==========k_need_score: %d %d %d\n", k_need_score->ne[0], k_need_score->ne[1], k_need_score->ne[2]);
             }
             score = ggml_view_2d(ctx0, score, k_need_score_num, score->ne[1]*score->ne[2], score->nb[1], 0);
             if (il==3) {
-                printf("==========score: %d %d %d\n", score->ne[0], score->ne[1], score->ne[2]);
+                // printf("==========score: %d %d %d\n", score->ne[0], score->ne[1], score->ne[2]);
             }
             score = ggml_transpose(ctx0, score);
             if (il==3) {
-                printf("==========score: %d %d %d\n", score->ne[0], score->ne[1], score->ne[2]);
+                // printf("==========score: %d %d %d\n", score->ne[0], score->ne[1], score->ne[2]);
             }
             score = ggml_mean(ctx0, score);
             if (il==3) {
-                printf("==========score: %d %d %d\n", score->ne[0], score->ne[1], score->ne[2]);
+                // printf("==========score: %d %d %d\n", score->ne[0], score->ne[1], score->ne[2]);
             }
             score = ggml_transpose(ctx0, score);
             // ggml_view_1d(ctx0, kq_need_score, )
@@ -1617,11 +1617,11 @@ ggml_tensor * llm_graph_context::build_attn(
             k_represent_l_il = ggml_view_3d(ctx0, k_represent_l_il, k_represent_top_k->ne[0], k_represent_top_k->ne[1], k_represent_top_k->ne[2], k_represent_top_k->nb[1], k_represent_top_k->nb[2], 0);
             ggml_build_forward_expand(gf, ggml_cpy(ctx0, k_represent_top_k, k_represent_l_il));
             if (il==3) {
-                printf("==========score_top_k: %d %d %d, type:%d\n", score_top_k->ne[0], score_top_k->ne[1], score_top_k->ne[2], score_top_k->type);
-                printf("==========block_score: %d %d %d, type:%d\n", block_score->ne[0], block_score->ne[1], block_score->ne[2], block_score->type);
+                // printf("==========score_top_k: %d %d %d, type:%d\n", score_top_k->ne[0], score_top_k->ne[1], score_top_k->ne[2], score_top_k->type);
+                // printf("==========block_score: %d %d %d, type:%d\n", block_score->ne[0], block_score->ne[1], block_score->ne[2], block_score->type);
                 // printf("==========mask: %d %d %d\n", mask->ne[0], mask->ne[1], mask->ne[2]);
-                printf("==========k_represent: %d %d %d %d\n", k_represent->ne[0], k_represent->ne[1], k_represent->ne[2], k_represent->ne[3]);
-                printf("==========k_represent_top_k: %d %d %d %d\n", k_represent_top_k->ne[0], k_represent_top_k->ne[1], k_represent_top_k->ne[2], k_represent_top_k->ne[3]);
+                // printf("==========k_represent: %d %d %d %d\n", k_represent->ne[0], k_represent->ne[1], k_represent->ne[2], k_represent->ne[3]);
+                // printf("==========k_represent_top_k: %d %d %d %d\n", k_represent_top_k->ne[0], k_represent_top_k->ne[1], k_represent_top_k->ne[2], k_represent_top_k->ne[3]);
                 // printf("==========k_represent_l_il: %d %d %d %d\n", k_represent_l_il->ne[0], k_represent_l_il->ne[1], k_represent_l_il->ne[2], k_represent_l_il->ne[3]);
             }
             
